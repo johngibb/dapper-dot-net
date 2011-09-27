@@ -16,6 +16,9 @@ using System.Reflection.Emit;
 using System.Text;
 using System.Threading;
 using System.Text.RegularExpressions;
+using System.Data.SqlClient;
+using Microsoft.SqlServer.Server;
+using System.Data.Linq;
 
 namespace Dapper
 {
@@ -1081,6 +1084,15 @@ this IDbConnection cnn, string sql, Func<TFirst, TSecond, TThird, TFourth, TRetu
                     il.EmitCall(OpCodes.Callvirt, typeof(DbString).GetMethod("AddParameter"), null); // stack is now [parameters]
                     continue;
                 }
+                if (prop.PropertyType.IsGenericType && prop.PropertyType.GetGenericTypeDefinition() == typeof(TVPWrapper<>))
+                {
+                    il.Emit(OpCodes.Ldloc_0); // stack is now [parameters] [typed-param]
+                    il.Emit(OpCodes.Callvirt, prop.GetGetMethod()); // stack is [parameters] [dbstring]
+                    il.Emit(OpCodes.Ldarg_0); // stack is now [parameters] [dbstring] [command]
+                    il.Emit(OpCodes.Ldstr, prop.Name); // stack is now [parameters] [dbstring] [command] [name]
+                    il.EmitCall(OpCodes.Callvirt, prop.PropertyType.GetMethod("AddParameter"), null); // stack is now [parameters]
+                    continue;
+                }
                 DbType dbType = LookupDbType(prop.PropertyType, prop.Name);
                 if (dbType == DbType.Xml)
                 {
@@ -1658,6 +1670,46 @@ this IDbConnection cnn, string sql, Func<TFirst, TSecond, TThird, TFourth, TRetu
                     command.Dispose();
                     command = null;
                 }
+            }
+        }
+        
+        public sealed class TVPWrapper<T>
+        {
+            public string TypeName { get; set; }
+            public IEnumerable<T> Values { get; set; }
+
+            public void AddParameter(IDbCommand command, string name)
+            {
+                var sqlCmd = command as SqlCommand;
+                if (sqlCmd == null)
+                {
+                    throw new InvalidOperationException("Table-valued params are only supported by SQL Server");
+                }
+                var param = sqlCmd.CreateParameter();
+                param.ParameterName = name;
+                param.SqlDbType = SqlDbType.Structured;
+                param.TypeName = TypeName;
+
+                var datatable = new DataTable();
+                foreach (var prop in typeof(T).GetProperties())
+                {
+                    datatable.Columns.Add(prop.Name, prop.PropertyType);
+                }
+                
+
+                foreach (var val in Values)
+                {
+                    var row = datatable.NewRow();
+                    foreach (var prop in typeof(T).GetProperties())
+                    {
+                        row[prop.Name] = prop.GetValue(val, null);
+                    }
+                    datatable.Rows.Add(row);
+                }
+                
+                param.Value = datatable;
+
+                sqlCmd.Parameters.Add(param);
             }
         }
     }

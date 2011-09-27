@@ -845,6 +845,50 @@ end");
             }
         }
 
+        // SQL Server specific test to demonstrate TVP 
+        public void TestComplexTVP()
+        {
+            try
+            {
+                connection.Execute("if exists (select * from sys.procedures where name = 'get_people') drop proc get_people;"); 
+                connection.Execute("if exists (select * from sys.types where name = 'person_list_type') drop type person_list_type;");
+                
+                connection.Execute("create type person_list_type as table (personId int, name nvarchar(max))");
+                connection.Execute("create proc get_people @people person_list_type READONLY AS select * from @people");
+
+                var people = new List<Person> {
+                    new Person { PersonId = 1, Name = "John" },
+                    new Person { PersonId = 2, Name = "Jack" },
+                };
+
+                var returned = connection.Query<Person>("get_people", 
+                    new { 
+                        people = new Dapper.SqlMapper.TVPWrapper<Person> { TypeName = "person_list_type", Values = people } 
+                    }, 
+                    commandType: CommandType.StoredProcedure).ToList();
+
+                people.Count.IsEqualTo(returned.Count);
+
+                for (var i = 0; i < people.Count; i++)
+                {
+                    people[i].PersonId.IsEqualTo(returned[i].PersonId);
+                    people[i].Name.IsEqualTo(returned[i].Name);
+                }
+
+            }
+            finally
+            {
+                try
+                {
+                    connection.Execute("DROP PROC get_people");
+                }
+                finally
+                {
+                    connection.Execute("DROP TYPE person_list_type");
+                }
+            }
+        }
+
         class Parent
         {
             public int Id { get; set; }
